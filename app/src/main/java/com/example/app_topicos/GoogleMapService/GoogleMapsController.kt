@@ -31,6 +31,7 @@ class GoogleMapsController(
 
     // Lista global para guardar los lugares encontrados
     private var lugaresEncontrados: List<PlacesResponse.Place> = emptyList()
+    private var ultimaInstruccion: String? = null // Variable para guardar la última instrucción
     private var navigationHandler: android.os.Handler? = null
     private val locationClient: FusedLocationProviderClient =
         LocationServices.getFusedLocationProviderClient(context)
@@ -242,6 +243,7 @@ class GoogleMapsController(
     fun cancelarNavegacion() {
         // Detener la navegación
         isNavigationActive = false
+        ultimaInstruccion = null
         textToSpeech.speak(
             "La navegación ha sido cancelada.",
             TextToSpeech.QUEUE_FLUSH,
@@ -258,63 +260,24 @@ class GoogleMapsController(
     ) {
         val pasos = ruta.legs?.firstOrNull()?.steps?.toMutableList() ?: return
         var pasoActual: DirectionsResponse.Route.Leg.Step? = pasos.firstOrNull()
-        val handler = android.os.Handler(context.mainLooper)
         isNavigationActive = true
 
         if (verificarPermisos()) {
             try {
-                val repetirInstruccion = object : Runnable {
-                    override fun run() {
-                        if (!isNavigationActive) {
-                            // Si la navegación fue cancelada, detener la repetición
-                            handler.removeCallbacksAndMessages(null)
-                            return
-                        }
-
-                        pasoActual?.let { paso ->
-                            val instruccion =
-                                paso.html_instructions ?: "Instrucción desconocida."
-                            val distancia = paso.distance?.text ?: "desconocida"
-                            val duracion = paso.duration?.text ?: "desconocida"
-                            val instruccionTraducida =
-                                traducirInstruccion(instruccion, distancia, duracion)
-                            textToSpeech.speak(
-                                instruccionTraducida,
-                                TextToSpeech.QUEUE_FLUSH,
-                                null,
-                                null
-                            )
-                            Log.d(
-                                "InstruccionesRuta",
-                                "Repetir instrucción: $instruccionTraducida"
-                            )
-                        }
-
-                        // Si la navegación sigue activa, programar la próxima repetición en 10 segundos
-                        if (isNavigationActive) {
-                            handler.postDelayed(this, 10000)
-                        }
-                    }
-                }
-
-                // Decir la primera instrucción inmediatamente
+                // Decir la primera instrucción inmediatamente y guardarla
                 pasoActual?.let { primerPaso ->
                     val instruccion = primerPaso.html_instructions ?: "Instrucción desconocida."
                     val distancia = primerPaso.distance?.text ?: "desconocida"
                     val duracion = primerPaso.duration?.text ?: "desconocida"
-                    val instruccionTraducida =
-                        traducirInstruccion(instruccion, distancia, duracion)
+                    ultimaInstruccion = traducirInstruccion(instruccion, distancia, duracion)
                     textToSpeech.speak(
-                        instruccionTraducida,
+                        ultimaInstruccion,
                         TextToSpeech.QUEUE_FLUSH,
                         null,
                         null
                     )
-                    Log.d("InstruccionesRuta", "Primera instrucción: $instruccionTraducida")
+                    Log.d("InstruccionesRuta", "Primera instrucción: $ultimaInstruccion")
                 }
-
-                // Iniciar la repetición de las instrucciones cada 10 segundos
-                handler.postDelayed(repetirInstruccion, 10000)
 
                 // Monitorear el progreso hacia el siguiente paso
                 locationClient.requestLocationUpdates(
@@ -328,7 +291,6 @@ class GoogleMapsController(
                             if (!isNavigationActive) {
                                 // Si la navegación fue cancelada, detener las actualizaciones de ubicación
                                 locationClient.removeLocationUpdates(this)
-                                handler.removeCallbacksAndMessages(null)
                                 return
                             }
 
@@ -339,10 +301,9 @@ class GoogleMapsController(
                                 val distanciaAlDestino =
                                     calcularDistancia(posicionActual, destino)
 
-                                // Si se alcanza el destino, detener la repetición y finalizar
+                                // Si se alcanza el destino, finalizar
                                 if (distanciaAlDestino < 50) {
                                     isNavigationActive = false
-                                    handler.removeCallbacksAndMessages(null)
                                     textToSpeech.speak(
                                         "Has llegado a tu destino: $nombreDestino.",
                                         TextToSpeech.QUEUE_FLUSH,
@@ -365,9 +326,31 @@ class GoogleMapsController(
                                             pasos.removeAt(0)
                                             if (pasos.isNotEmpty()) {
                                                 pasoActual = pasos.first()
+                                                // Guardar la nueva instrucción como última
+                                                val instruccion = pasoActual?.html_instructions
+                                                    ?: "Instrucción desconocida."
+                                                val distancia =
+                                                    pasoActual?.distance?.text ?: "desconocida"
+                                                val duracion =
+                                                    pasoActual?.duration?.text ?: "desconocida"
+                                                ultimaInstruccion =
+                                                    traducirInstruccion(
+                                                        instruccion,
+                                                        distancia,
+                                                        duracion
+                                                    )
+                                                textToSpeech.speak(
+                                                    ultimaInstruccion,
+                                                    TextToSpeech.QUEUE_FLUSH,
+                                                    null,
+                                                    null
+                                                )
+                                                Log.d(
+                                                    "InstruccionesRuta",
+                                                    "Siguiente instrucción: $ultimaInstruccion"
+                                                )
                                             } else {
                                                 isNavigationActive = false
-                                                handler.removeCallbacksAndMessages(null)
                                             }
                                         }
                                     }
@@ -383,6 +366,11 @@ class GoogleMapsController(
         } else {
             manejarPermisosDenegados()
         }
+    }
+
+    // Método para obtener la última instrucción
+    fun obtenerUltimaInstruccion(): String {
+        return ultimaInstruccion ?: "No hay instrucciones disponibles en este momento."
     }
 
     private fun traducirInstruccion(

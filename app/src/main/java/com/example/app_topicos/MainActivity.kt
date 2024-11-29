@@ -68,6 +68,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private val API_KEY = "tuapi"
     private lateinit var googleMapsHelper: GoogleMapsController
     private var isNavigationActive = false
+    private var isCalculoActive = false
 
     private lateinit var speechRecognizer: SpeechRecognizer
     private val uuid = UUID.randomUUID().toString()
@@ -284,108 +285,30 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun startListening() {
-        var respuesta: String
-        if (isNavigationActive) {
-            isNavigationActive = !isNavigationActive
-            googleMapsHelper.cancelarNavegacion()
-        }
+        // Configurar el RecognitionListener para el SpeechRecognizer
         speechRecognizer.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
                 Toast.makeText(this@MainActivity, "Habla ahora", Toast.LENGTH_SHORT).show()
             }
 
-
             override fun onResults(results: Bundle?) {
+                // Obtener el texto reconocido
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                var spokenText = matches?.get(0) ?: ""
+                val spokenText = matches?.get(0) ?: ""
                 Log.d(TAG, "Texto reconocido: $spokenText")
 
-                if (!bandera) {
-                    respuesta = sendToDialogflowBack(spokenText)
-                    Log.d(TAG, "Respuesta de Dialogflow: $respuesta")
-
-                    // Separar la respuesta en la primera palabra y el resto
-                    val splitRespuesta = respuesta.split(" ", limit = 2)
-                    val comando = splitRespuesta[0].lowercase() // La primera palabra
-                    val restoTexto =
-                        if (splitRespuesta.size > 1) splitRespuesta[1] else "" // El resto del texto
-
-                    when (comando) {
-                        "saludo" -> {
-                            speak(
-                                "¡Bienvenido a tu asistente de detección y autenticación de Billetes!\n" +
-                                        "¿Qué deseas hacer hoy? \n" +
-                                        "¿Te gustaría verificar el valor de un billete?"
-                            )
-                        }
-
-                        "verifica.ultimo" -> {
-                            val resultado = obtenerUltimoBilleteAnalizado()
-                            speak(resultado)
-                        }
-
-                        "suma.total" -> {
-                            val total = sumarBilletesAnalizados()
-                            val message = "La suma total de los billetes analizados es de ${
-                                "%.2f".format(total)
-                            } bolivianos"
-                            speak(message)
-                        }
-
-                        "verifica.corte" -> {
-                            startPhotoCaptureSequence()
-                        }
-
-                        "ubicacion.actual" -> {
-                            Log.d(TAG, "Proveedor de GPS inicializado")
-                            getLastKnownLocation()
-                        }
-
-                        "ubicacion.detalle" -> {
-                            if (!::ubucacionDatos.isInitialized) {
-                                speak("Aún no obtuve tu ubicación actual")
-                            } else {
-                                speak("Donde te encuentras se puede categorizar como ${ubucacionDatos.types}")
-                            }
-                        }
-
-                        "verificar.operacion" -> {
-                            if (billetesConBuenaConfianza.count() > 0) {
-                                speak("¿Qué deseas hacer con los billetes analizados?")
-                                bandera = true
-                            } else {
-                                speak("No hay billetes analizados aún")
-                            }
-                        }
-
-                        "repetir.ubicacion" -> {
-                            googleMapsHelper.repetirLugaresEncontrados()
-                        }
-
-                        "navegacion" -> {
-                            if (restoTexto.isNotEmpty()) {
-                                googleMapsHelper.buscarLugar(restoTexto)
-                                isNavigationActive = true
-//                                speak("Navegando hacia $restoTexto")
-                                // Aquí puedes llamar a tu lógica de navegación con el resto del texto
-//                                iniciarNavegacionEnGoogleMaps(restoTexto)
-                            } else {
-                                speak("Por favor, indícame el destino para la navegación.")
-                            }
-                        }
-
-                        else -> {
-                            speak("No entendí el comando. Intenta nuevamente.")
-                        }
-                    }
-                } else {
-                    spokenText += "aquí están los datos de los billetes que tengo por el momento, ${billetesConBuenaConfianza.toString()}"
+                if (isCalculoActive) {
+                    // Si el modo de cálculo está activo, envía la instrucción a ChatGPT para cálculo
                     callChatGPT(spokenText)
-                    bandera = false
+                    isCalculoActive = false // Reiniciar el estado después del cálculo
+                } else {
+                    // Procesar el texto reconocido para comandos generales
+                    processCommand(spokenText)
                 }
             }
 
             override fun onError(error: Int) {
+                // Manejar errores del SpeechRecognizer
                 val errorMessage = when (error) {
                     SpeechRecognizer.ERROR_NO_MATCH -> "No se reconoció ninguna coincidencia"
                     SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "El reconocimiento de voz está ocupado"
@@ -402,7 +325,86 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             override fun onEndOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) {}
         })
+
+        // Iniciar la escucha del reconocimiento de voz
         speechRecognizer.startListening(recognizerIntent)
+    }
+
+    private fun processCommand(spokenText: String) {
+        // Si no está en modo cálculo, analiza el comando reconocido
+        var respuesta: String
+
+        if (!bandera) {
+            // Enviar texto a Dialogflow para obtener una respuesta
+            respuesta = sendToDialogflowBack(spokenText)
+            Log.d(TAG, "Respuesta de Dialogflow: $respuesta")
+
+            // Separar la respuesta en comando y argumento
+            val splitRespuesta = respuesta.split(" ", limit = 2)
+            val comando = splitRespuesta[0].lowercase() // Comando (primera palabra)
+            val restoTexto = if (splitRespuesta.size > 1) splitRespuesta[1] else "" // Argumentos
+
+            // Ejecutar acción basada en el comando reconocido
+            when (comando) {
+                "saludo" -> speak("¡Bienvenido a tu asistente! ¿Qué deseas hacer hoy?")
+                "verifica.ultimo" -> speak(obtenerUltimoBilleteAnalizado())
+                "openai.calculo" -> {
+                    isCalculoActive = true
+                    speak("Claro, dime qué cálculo deseas hacer.")
+                }
+
+                "suma.total" -> speak(
+                    "La suma total de los billetes es ${
+                        "%.2f".format(
+                            sumarBilletesAnalizados()
+                        )
+                    } bolivianos."
+                )
+
+                "verifica.corte" -> startPhotoCaptureSequence()
+                "ubicacion.actual" -> {
+                    Log.d(TAG, "Proveedor de GPS inicializado")
+                    getLastKnownLocation()
+                }
+
+                "ubicacion.detalle" -> {
+                    if (::ubucacionDatos.isInitialized) {
+                        speak("Te encuentras en ${ubucacionDatos.longName}, categorizado como ${ubucacionDatos.types}.")
+                    } else {
+                        speak("Aún no obtuve tu ubicación actual.")
+                    }
+                }
+
+                "verificar.operacion" -> {
+                    if (billetesConBuenaConfianza.isNotEmpty()) {
+                        speak("¿Qué deseas hacer con los billetes analizados?")
+                        bandera = true
+                    } else {
+                        speak("No hay billetes analizados aún.")
+                    }
+                }
+
+                "repetir.ubicacion" -> googleMapsHelper.repetirLugaresEncontrados()
+                "navegacion.cerrar" -> googleMapsHelper.cancelarNavegacion()
+                "indicacion.repetir" -> speak(googleMapsHelper.obtenerUltimaInstruccion())
+                "navegacion" -> {
+                    if (restoTexto.isNotEmpty()) {
+                        googleMapsHelper.buscarLugar(restoTexto)
+                        isNavigationActive = true
+                    } else {
+                        speak("Por favor, indícame el destino para la navegación.")
+                    }
+                }
+
+                else -> speak("No entendí el comando. Intenta nuevamente.")
+            }
+        } else {
+            // Si bandera está activa, concatena información para ChatGPT
+            val enrichedText =
+                "$spokenText aquí están los datos de los billetes: ${billetesConBuenaConfianza.toString()}"
+            callChatGPT(enrichedText)
+            bandera = false
+        }
     }
 
 
@@ -751,7 +753,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             .build()
 
         val request = Request.Builder()
-            .url("https://be97-181-115-215-42.ngrok-free.app/predict") // Cambia la URL a la de tu API
+            .url("https://5df2-181-115-136-122.ngrok-free.app/predict") // Cambia la URL a la de tu API
             .post(requestBody)
             .build()
 
@@ -846,6 +848,68 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         })
     }
+
+    private fun callChatGPTForMath(prompt: String) {
+        val apiKey = "tu-api-key-aqui"
+        val url = "https://api.openai.com/v1/chat/completions"
+        val client = OkHttpClient()
+
+        // Formato del cuerpo con el prompt ajustado
+        val jsonBody = """
+        {
+            "model": "gpt-4",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Eres un asistente que realiza cálculos matemáticos según las instrucciones del usuario. Responde con el resultado en un formato claro y directo que pueda ser dictado por voz. Si no es una operación válida, responde indicando que no entendiste la operación."
+                },
+                {
+                    "role": "user",
+                    "content": "$prompt"
+                }
+            ]
+        }
+    """.trimIndent()
+
+        val requestBody = RequestBody.create("application/json".toMediaTypeOrNull(), jsonBody)
+        val request = Request.Builder()
+            .url(url)
+            .post(requestBody)
+            .addHeader("Authorization", "Bearer $apiKey")
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e(TAG, "Error desconocido: ${e.message}")
+                speak("Hubo un problema al procesar la solicitud. Inténtalo nuevamente.")
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                if (response.isSuccessful) {
+                    val responseBody = response.body?.string()
+                    try {
+                        val jsonObject = JSONObject(responseBody ?: "")
+                        val choices = jsonObject.getJSONArray("choices")
+                        val messageContent = choices.getJSONObject(0)
+                            .getJSONObject("message")
+                            .getString("content")
+                            .trim()
+                        Log.d("GPT", messageContent)
+
+                        // Dictar el resultado de la operación
+                        speak(messageContent)
+                    } catch (e: JSONException) {
+                        Log.e(TAG, "Error al parsear la respuesta de ChatGPT", e)
+                        speak("Hubo un error al procesar la respuesta. Inténtalo nuevamente.")
+                    }
+                } else {
+                    Log.e(TAG, "Error en la solicitud: ${response.message}")
+                    speak("No se pudo procesar la operación. Inténtalo nuevamente.")
+                }
+            }
+        })
+    }
+
 
     private fun getLastKnownLocation() {
 
